@@ -71,12 +71,31 @@ output_dirs = {
 for dir_path in output_dirs.values():
     os.makedirs(dir_path, exist_ok=True)
 
+# --- Calculate Proportion of Order User IDs Present in Users Dataset ---
+order_user_ids = set(orders['user_id'].unique())
+user_user_ids = set(users['user_id'].unique())
+
+common_user_ids = order_user_ids.intersection(user_user_ids)
+proportion_common = len(common_user_ids) / len(order_user_ids) if len(order_user_ids) > 0 else 0
+
+print(f"\nProportion of user_ids in orders that are also in users: {proportion_common:.2%}")
+print(f"Total unique user_ids in orders: {len(order_user_ids)}")
+print(f"Total unique user_ids in users: {len(user_user_ids)}")
+print(f"Number of common user_ids: {len(common_user_ids)}")
+
 # --- User Segmentation ---
 existing_user_ids = set(users['user_id'])
 orders['user_type'] = orders['user_id'].apply(lambda x: 'Existing' if x in existing_user_ids else 'New')
 print("\nUser Segmentation:")
 user_type_counts = orders['user_type'].value_counts()
 print(user_type_counts)
+# Check if the counts match the proportion calculation
+if len(order_user_ids) > 0:
+    proportion_existing_from_segmentation = user_type_counts.get('Existing', 0) / orders['user_id'].nunique()
+    print(f"Proportion of 'Existing' users from segmentation: {proportion_existing_from_segmentation:.2%}") # This should match the previous calculation if logic is consistent
+else:
+    print("No unique users in orders to calculate segmentation proportion.")
+
 save_df_as_png(user_type_counts, os.path.join(output_base, 'user_type_distribution.png'), title='Distribution Of User Types In Orders')
 
 # User Report (Primarily based on users dataset, no segmentation needed here)
@@ -395,6 +414,52 @@ for col, unit in zip(duration_cols, duration_units):
         plt.close(fig_dur) # Close plot
     else:
         print(f"Could not generate plots for {col} due to missing or invalid data.")
+
+# --- Repayment Timing Analysis (Segmented) ---
+print("\n--- Repayment Timing Analysis (Cumulative, Segmented) ---")
+orders_entered_repayment = orders[orders['repayment_ts'].notna() & orders['time_to_repayment_start'].notna() & (orders['time_to_repayment_start'] >= 0)].copy()
+
+if not orders_entered_repayment.empty:
+    timeframes = [5, 7, 10, 15]
+    results = {}
+
+    # --- Define user segments and corresponding dataframes --- #
+    segments = {
+        'All Users': orders_entered_repayment,
+        'New Users': orders_entered_repayment[orders_entered_repayment['user_type'] == 'New'],
+        'Existing Users': orders_entered_repayment[orders_entered_repayment['user_type'] == 'Existing']
+    }
+
+    # --- Calculate proportions for each segment --- #
+    for segment_name, segment_df in segments.items():
+        total_in_segment = len(segment_df)
+        if total_in_segment > 0:
+            proportions = {}
+            print(f"\n-- {segment_name} (Total: {total_in_segment}) --")
+            for days in timeframes:
+                count = len(segment_df[segment_df['time_to_repayment_start'] <= days])
+                prop = count / total_in_segment
+                proportions[f'<= {days} Days'] = prop
+                print(f"  Proportion within {days} days: {prop:.1%}")
+            results[segment_name] = proportions
+        else:
+            print(f"\n-- {segment_name}: No orders found entering repayment. --")
+            results[segment_name] = {f'<= {d} Days': 0 for d in timeframes} # Add zeros if no data
+
+    # --- Combine results into a DataFrame and format --- #
+    summary_df = pd.DataFrame(results)
+    summary_df.index.name = 'Timeframe'
+
+    print("\n--- Combined Repayment Timing Summary --- ")
+    print(summary_df.to_string(float_format='{:.1%}'.format)) # Print formatted table to console
+
+    # Format for PNG saving (map applies formatting)
+    summary_df_formatted = summary_df.applymap('{:.1%}'.format)
+    save_df_as_png(summary_df_formatted, os.path.join(pipeline_dir, 'repayment_timing_cumulative_proportion_segmented.png'), title='Cumulative Proportion of Orders Entering Repayment by User Type')
+
+else:
+    print("No orders found entering repayment to analyze timing.")
+# --------------------------------
 
 # --- User Spending Analysis (Segmented) ---
 print("\n=== User Spending Analysis (Segmented) ===")
